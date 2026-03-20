@@ -6,10 +6,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean
 
-# Install Playwright dependencies
+# Install Playwright dependencies (all needed libraries)
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libatk-bridge2.0-0 \
@@ -24,10 +23,20 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libatspi2.0-0 \
     libxshmfence1 \
+    libx11-xcb1 \
+    libxtst6 \
+    libx11-6 \
+    libxcb1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrender1 \
+    libxss1 \
+    libxxf86vm1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies directly (no venv)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
