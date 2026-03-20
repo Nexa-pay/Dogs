@@ -124,8 +124,6 @@ async def initialize_browser():
                 '--disable-gpu',
                 '--window-size=1920,1080',
                 '--disable-blink-features=AutomationControlled',
-                '--disable-web-security',
-                '--disable-features=VizDisplayCompositor',
             ]
         )
         
@@ -141,15 +139,10 @@ async def initialize_browser():
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-            window.chrome = { runtime: {} };
         """)
         
         logger.info("Browser initialized successfully")
         
-        # Auto-login if token provided
         if LOGIN_TOKEN and not logged_in:
             await auto_login()
         
