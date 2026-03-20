@@ -1,23 +1,20 @@
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip", "python311Packages.virtualenv"]
+nixPkgs = ["python311", "python311Packages.pip"]
 
 [phases.install]
 cmds = [
-  "python -m venv /opt/venv",
-  ". /opt/venv/bin/activate",
-  "pip install --upgrade pip",
-  "pip install -r requirements.txt",
+  "pip install --break-system-packages --upgrade pip",
+  "pip install --break-system-packages -r requirements.txt",
   "playwright install chromium",
   "playwright install-deps"
 ]
 
 [phases.build]
 cmds = [
-  ". /opt/venv/bin/activate",
-  "pip install -r requirements.txt",
+  "pip install --break-system-packages -r requirements.txt",
   "playwright install chromium",
   "playwright install-deps"
 ]
 
 [start]
-cmd = ". /opt/venv/bin/activate && python soul.py"
+cmd = "python soul.py"
